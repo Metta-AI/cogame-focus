@@ -80,14 +80,21 @@
           "type": "integer",
           "minimum": 2,
           "maximum": 400,
-          "default": 160
+          "default": 120
+        },
+        "episodeTimeoutSeconds": {
+          "description": "Wall-clock the game assumes the platform allows an episode when COWORLD_TIMEOUT_SECONDS is not in its environment; play stops on material at 60% of it so results and the replay always land.",
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 6000,
+          "default": 1200
         },
         "turnDelayMs": {
           "description": "Spectator pacing delay between plies.",
           "type": "integer",
           "minimum": 0,
           "maximum": 10000,
-          "default": 900
+          "default": 300
         },
         "model": {
           "description": "Claude model that drives every seat.",
@@ -296,7 +303,7 @@
     {
       "id": "standard",
       "name": "Standard game",
-      "description": "Two cogs, the classic 52-square board, up to 160 plies (budget-fitted); material decides an unfinished game.",
+      "description": "Two cogs, the classic 52-square board, up to 120 plies (budget-fitted); material decides an unfinished game.",
       "game_config": {
         "players": [
           {
@@ -307,8 +314,8 @@
           }
         ],
         "num_agents": 2,
-        "maxPlies": 160,
-        "turnDelayMs": 900,
+        "maxPlies": 120,
+        "turnDelayMs": 300,
         "player_connect_timeout_seconds": 180
       }
     }

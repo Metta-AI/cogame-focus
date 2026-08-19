@@ -25,7 +25,7 @@ proc focLoadReplay(data: ptr uint8, length: cint): cint
     lastError = ""
     let replay = parseJson(bytesFromPointer(data, int(length)))
     var config = defaultGameConfig()
-    config.maxPlies = replay["config"]{"maxPlies"}.getInt(160)
+    config.maxPlies = replay["config"]{"maxPlies"}.getInt(120)
     config.seed = replay["config"]{"seed"}.getInt(0)
     config.sampled = true
     for name in replay["names"]:

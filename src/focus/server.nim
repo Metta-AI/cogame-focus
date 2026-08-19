@@ -223,20 +223,26 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
     let client = newLlmClient(config)
 
-    ## The platform hands the container its own kill time. Play inside a
-    ## fraction of it so results and the replay are written with room to
-    ## spare — an episode that overruns is discarded whole.
+    ## The platform kills the episode at its timeout and keeps nothing.
+    ## Play inside a fraction of it so results and the replay are written
+    ## with room to spare. The hosted dispatcher hands the timeout only to
+    ## its own worker sidecar, NOT to the game container, so when the env
+    ## is silent assume the configured platform default rather than
+    ## playing open-ended.
     let hostedTimeout = getEnv("COWORLD_TIMEOUT_SECONDS", "").strip()
-    let timeoutSeconds =
+    var timeoutSeconds =
       if hostedTimeout.len > 0:
         try: parseFloat(hostedTimeout) except ValueError: 0.0
       else: 0.0
+    if timeoutSeconds <= 0.0:
+      timeoutSeconds = config.episodeTimeoutSeconds.float
     let playDeadline =
       if timeoutSeconds > 0.0: gameStart + timeoutSeconds * PlayBudgetFraction
       else: 0.0
     if playDeadline > 0.0:
-      echo "focus: episode timeout ", timeoutSeconds.int, "s; playing until ",
-        (timeoutSeconds * PlayBudgetFraction).int, "s"
+      echo "focus: episode timeout ", timeoutSeconds.int, "s (",
+        (if hostedTimeout.len > 0: "from env" else: "assumed"),
+        "); playing until ", (timeoutSeconds * PlayBudgetFraction).int, "s"
 
     while true:
       var simCopy: Sim
@@ -269,6 +275,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         scripted = seatScripted, header = header)
 
       withLock stateLock:
+        echo "focus: ply ", state.sim.ply + 1, " seat ", seat, " ",
+          moveText(decision.move), " at ", (epochTime() - gameStart).int, "s"
         state.sim.recordSay(seat, decision.say)
         try:
           state.sim.applyMove(seat, decision.move)
@@ -441,7 +449,7 @@ proc buildRouter(replayMode: bool): Router =
 
 proc configFromReplay*(payload: JsonNode): GameConfig =
   result = defaultGameConfig()
-  result.maxPlies = payload["config"]{"maxPlies"}.getInt(160)
+  result.maxPlies = payload["config"]{"maxPlies"}.getInt(120)
   result.seed = payload["config"]{"seed"}.getInt(0)
   ## The replay carries the episode's fitted cap; never re-fit it.
   result.sampled = true

@@ -11,6 +11,7 @@ type
     players*: seq[PlayerConfig]
     seed*: int
     maxPlies*: int        ## ply cap for the episode (material decides)
+    episodeTimeoutSeconds*: int ## assumed platform kill time when the env is silent
     sampled*: bool        ## true once the budget cap has been applied
     turnDelayMs*: int
     playerConnectTimeoutSeconds*: float
@@ -49,8 +50,9 @@ type
 proc defaultGameConfig*(): GameConfig =
   GameConfig(
     seed: 0,
-    maxPlies: 160,
-    turnDelayMs: 900,
+    maxPlies: 120,
+    episodeTimeoutSeconds: 1200,
+    turnDelayMs: 300,
     playerConnectTimeoutSeconds: 180,
     model: "claude-sonnet-5",
     maxOutputTokens: 300,
@@ -76,6 +78,8 @@ proc update*(config: var GameConfig, configJson: string) =
     config.seed = node["seed"].getInt()
   if node.hasKey("maxPlies"):
     config.maxPlies = node["maxPlies"].getInt()
+  if node.hasKey("episodeTimeoutSeconds"):
+    config.episodeTimeoutSeconds = node["episodeTimeoutSeconds"].getInt()
   if node.hasKey("sampled"):
     config.sampled = node["sampled"].getBool()
   if node.hasKey("turnDelayMs"):
