@@ -156,7 +156,8 @@
         (b.above + b.below) - (b.cogHalf + b.below);
       var sqV = Math.min(vAvailW, vAvailH);
       var horizontal = sqH >= sqV;
-      var sq = horizontal ? sqH : sqV;
+      // Never negative: a not-yet-laid-out canvas still gets a valid frame.
+      var sq = Math.max(horizontal ? sqH : sqV, 8);
       if (horizontal) {
         var bx = margin + b.w + gutter + Math.max(hAvailW - sq, 0) / 2;
         var by = margin + Math.max(hAvailH - sq, 0) / 2;
