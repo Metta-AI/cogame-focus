@@ -1,4 +1,4 @@
-version     = "0.1.1"
+version     = "0.1.2"
 author      = "daveey"
 description = "Focus (Domination): LLM-driven stacking board game for the Softmax Coworld platform. Two cogs, 52 squares, stacks capped at five; a policy is just a prompt."
 license     = "MIT"

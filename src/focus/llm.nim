@@ -333,13 +333,17 @@ Rules:
   reserve) wins.
 - Table talk is heard by everyone. Bluff, needle, and mislead freely.
 
-Respond with a single JSON object and nothing else."""
+OUTPUT FORMAT: reply with ONLY one JSON object, nothing else - no
+analysis, no explanation, no markdown fences, no text before or after
+the object. Your reply must begin with the character { and end with }.
+Decide silently; put any words for the table in the "say" field."""
 
 proc actionInstruction(sim: Sim, seat: int): string =
   "It is your turn. Say one short line to the table (max " & $MaxSayLen &
     " chars, may be empty) and pick exactly one LEGAL option from the " &
     "list above.\n" &
-    "Respond with JSON: {\"say\": \"...\", \"move\": {\"from\": \"e4\", " &
+    "Reply with ONLY the JSON object (start with {, no other text): " &
+    "{\"say\": \"...\", \"move\": {\"from\": \"e4\", " &
     "\"count\": 2, \"dir\": \"N\"}} to move, or {\"say\": \"...\", " &
     "\"place\": \"e4\"} to drop a reserve piece."
 
@@ -369,7 +373,13 @@ proc extractJsonObject(text: string): JsonNode =
   let start = text.find('{')
   let stop = text.rfind('}')
   if start < 0 or stop <= start:
-    raise newException(FocusError, "no JSON object in response")
+    ## Quote the head of the reply so a hosted log shows WHAT the model
+    ## sent instead of JSON (prose, a refusal, a cut-off analysis...).
+    var head = text.strip()
+    if head.len > 160:
+      head = head[0 ..< 160] & "..."
+    raise newException(FocusError, "no JSON object in response: " &
+      head.replace("\n", " "))
   parseJson(text[start .. stop])
 
 proc completeText(client: LlmClient, system, user: string): string =
@@ -388,7 +398,10 @@ proc completeText(client: LlmClient, system, user: string): string =
     url = client.bedrockUrl()
   else:
     body["model"] = %client.model
-    body["output_config"] = %*{"effort": "low"}
+    ## Only the Claude 5 / Opus tiers accept an effort setting; Haiku 4.5
+    ## rejects the whole request with a 400 if it is present.
+    if "haiku" notin client.model and "4-5" notin client.model:
+      body["output_config"] = %*{"effort": "low"}
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
@@ -415,6 +428,9 @@ proc completeText(client: LlmClient, system, user: string): string =
   for contentBlock in payload["content"]:
     if contentBlock{"type"}.getStr() == "text":
       result.add(contentBlock{"text"}.getStr())
+  if payload{"stop_reason"}.getStr() == "max_tokens" and '{' notin result:
+    raise newException(FocusError, "reply cut off at max_tokens before " &
+      "any JSON: " & result[0 .. min(result.high, 160)].replace("\n", " "))
 
 proc cleanSay(text: string): string =
   result = text.strip()
