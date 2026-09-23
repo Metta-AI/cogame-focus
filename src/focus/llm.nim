@@ -309,7 +309,7 @@ proc renderLegalMoves(sim: Sim, seat: int): string =
       " reserve pieces on any playable square (it goes on top).")
   lines.join("\n")
 
-proc systemPrompt(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int): string =
   let me = sim.seatName(seat)
   let them = sim.seatName(1 - seat)
   "You are " & me & ", a cog playing Focus (Domination) against " & them &
@@ -347,7 +347,7 @@ proc actionInstruction(sim: Sim, seat: int): string =
     "\"count\": 2, \"dir\": \"N\"}} to move, or {\"say\": \"...\", " &
     "\"place\": \"e4\"} to drop a reserve piece."
 
-proc userPrompt(sim: Sim, seat: int, prompt: string, header: string): string =
+proc userPrompt*(sim: Sim, seat: int, prompt: string, header: string): string =
   if header.len > 0:
     result.add(header & "\n\n")
   result.add("Piece letters: " & sim.pieceLetter(seat) & " = you (" &
