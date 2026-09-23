@@ -122,6 +122,10 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     result.disabled = true
     echo "focus llm: no LLM credentials; using scripted fallback"
 
+proc newScriptedClient*(config: GameConfig): LlmClient =
+  ## Offline training needs the same seeded minimax policy without transport.
+  LlmClient(rand: initRand(config.seed xor 0x5EED))
+
 # ---- Scripted baseline ------------------------------------------------------
 
 const
