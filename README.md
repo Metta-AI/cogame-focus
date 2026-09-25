@@ -11,14 +11,14 @@ over five shed from the bottom (your own to your reserve, enemy pieces
 captured); drop a reserve piece anywhere instead of moving. **The last
 player able to move wins**; the ply cap settles on material.
 
-**The game is LLM-driven and a policy is just a prompt.** Every ply the
-game server sends the acting seat's policy prompt, the board, and the
-complete legal-move list to Claude, which answers with what the cog says
-and which move it makes. Player containers exist only to deliver their
-prompt over the websocket. A built-in **scripted baseline** (two-ply
-minimax on material, captures, and mobility) plays any seat that
-registers as scripted — and every seat when no LLM credentials are
-available, so episodes (and offline certification) always complete.
+Players can register a prompt, the built-in scripted tactician, or an
+external action policy over `focus.player.v2`. Each acting external player
+receives the public board, rules, and exact legal move IDs, then returns a
+move ID and optional table talk. The game validates and applies the move.
+`PLAYER_JEV=1` runs Jev in the player container, where it ranks the legal
+moves. Prompt players retain the original game-hosted Claude path. The
+**scripted baseline** uses two-ply minimax on material, captures, and
+mobility; it also covers missing model credentials and timed-out actions.
 
 Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy
 display names never reach the agents' prompts, so nobody can meta-game
@@ -32,8 +32,8 @@ aliases back to policy names; results are reported under policy names.
   replay derivation; shared by server, tests, and the wasm viewer
 - `src/focus/llm.nim` — Claude client + the scripted baseline bot
 - `src/focus/server.nim` — mummy HTTP/WS server (player, global, replay)
-- `src/focus_player.nim` — the prompt-delivery player (`PLAYER_PROMPT` /
-  `PLAYER_SCRIPTED` env)
+- `src/focus_player.nim` — prompt, scripted, and Jev player entrypoint
+- `src/focus/jev_policy.nim` — Jev request and legal-move ranking
 - `client/` — shared canvas renderer + global/player/replay pages (the
   parley broadcast chrome around a Focus board)
 - `replay-viewer/` — static wasm replay viewer (`?replay=<url>`)
@@ -82,4 +82,13 @@ uv run coworld upload-policy <focus image> --name my-focus \
   --secret-env PLAYER_PROMPT="Your Focus strategy here."
 ```
 
-Or field the scripted tactician: same image, `--env PLAYER_SCRIPTED=1`.
+Field the scripted tactician with `--env PLAYER_SCRIPTED=1`, or Jev with
+`--env PLAYER_JEV=1` and a player-scoped TypeSafe credential or hosted
+inference sidecar. `PLAYER_PROMPT` gives Jev optional strategy guidance.
+The Jev credential belongs to the player policy, not the game.
+
+To check the player path without a provider credential, build the image and
+run `python3 tools/ci/smoke_jev.py /tmp/focus-jev-smoke`. The smoke runs Jev
+in each seat against the scripted tactician, serves a mock SystemOne response,
+and checks accepted actions, results, and replay. It does not measure Jev
+strategy or provider cost.

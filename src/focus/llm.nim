@@ -313,13 +313,7 @@ proc renderLegalMoves(sim: Sim, seat: int): string =
       " reserve pieces on any playable square (it goes on top).")
   lines.join("\n")
 
-proc systemPrompt*(sim: Sim, seat: int): string =
-  let me = sim.seatName(seat)
-  let them = sim.seatName(1 - seat)
-  "You are " & me & ", a cog playing Focus (Domination) against " & them &
-    """.
-
-Rules:
+const RulesText* = """Rules:
 - 8x8 board with the three squares in each corner missing (a1 b1 a2, g1 h1
   h2, a8 b8 a7, g8 h8 h7 are NOT playable). Files a-h, ranks 1-8; N is
   toward rank 8, E toward file h.
@@ -336,6 +330,13 @@ Rules:
   ply cap the side with more material (pieces in stacks it controls plus
   reserve) wins.
 - Table talk is heard by everyone. Bluff, needle, and mislead freely.
+"""
+
+proc systemPrompt*(sim: Sim, seat: int): string =
+  let me = sim.seatName(seat)
+  let them = sim.seatName(1 - seat)
+  "You are " & me & ", a cog playing Focus (Domination) against " & them &
+    ".\n\n" & RulesText & """
 
 OUTPUT FORMAT: reply with ONLY one JSON object, nothing else - no
 analysis, no explanation, no markdown fences, no text before or after
@@ -436,7 +437,7 @@ proc completeText(client: LlmClient, system, user: string): string =
     raise newException(FocusError, "reply cut off at max_tokens before " &
       "any JSON: " & result[0 .. min(result.high, 160)].replace("\n", " "))
 
-proc cleanSay(text: string): string =
+proc cleanSay*(text: string): string =
   result = text.strip()
   if result.len <= MaxSayLen:
     return

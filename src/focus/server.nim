@@ -3,21 +3,23 @@
 ## Endpoints:
 ##   GET /healthz                    - liveness
 ##   GET /client/global              - spectator page
-##   GET /client/player              - player page (view-only; policies are prompts)
+##   GET /client/player              - player page (view-only)
 ##   GET /client/replay              - replay page (replay mode)
 ##   GET /client/renderer.js         - shared board renderer
 ##   GET /client/assets/<name>       - sprites and fonts
-##   WS  /player?slot=N&token=T      - player protocol (prompt delivery)
+##   WS  /player?slot=N&token=T      - focus.player.v2
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (focus.player.v1), all JSON text frames:
+## Player protocol (focus.player.v2), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...}
 ##                   {"type":"state",...} after every event batch
 ##                   {"type":"final","scores":[...],"win":[...]}
 ##   player -> game: {"type":"prompt","prompt":"...","scripted":bool}
 ##                   (max 4000 chars; scripted:true plays the built-in
 ##                   minimax baseline for that seat)
+##                   {"type":"register","control":"external"}
+##                   {"type":"action","id":N,"move":"<legal id>","say":"..."}
 
 import
   std/[json, locks, os, sets, strutils, tables, times],
@@ -38,6 +40,13 @@ type
     sim: Sim
     prompts: seq[string]
     scripted: seq[bool]
+    registered: array[Seats, bool]
+    external: array[Seats, bool]
+    decisionId: int
+    pendingSeat: int
+    pendingMove: Move
+    pendingSay: string
+    pendingAccepted: bool
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -90,6 +99,18 @@ proc snapshotJson(gs: GameState): JsonNode =
   result["started"] = %gs.started
   result["done"] = %gs.sim.done
   result["connected"] = connected
+
+proc playerObservation(gs: GameState, slot: int): JsonNode =
+  result = gs.snapshotJson()
+  result.delete("policyNames")
+  result["protocol"] = %"focus.player.v2"
+  result["slot"] = %slot
+  result["rules"] = %RulesText
+  var legal = newJArray()
+  if not gs.sim.done and gs.sim.turn == slot:
+    for move in gs.sim.legalMoves(slot):
+      legal.add(%moveText(move))
+  result["legalMoves"] = legal
 
 proc broadcastLocked(gs: GameState) =
   ## Callers hold stateLock. Focus has no hidden information, so players
@@ -210,7 +231,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     while epochTime() < deadline:
       var allConnected = false
       withLock stateLock:
-        allConnected = state.playerSockets.len >= config.tokens.len
+        allConnected = state.playerSockets.len >= config.tokens.len and
+          state.registered[0] and state.registered[1]
       if allConnected:
         break
       sleep(200)
@@ -249,6 +271,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var seat: int
       var seatPrompt: string
       var seatScripted: bool
+      var external = false
       var header: string
       withLock stateLock:
         if state.sim.done:
@@ -266,8 +289,57 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         seat = state.sim.turn
         seatPrompt = state.prompts[seat]
         seatScripted = state.scripted[seat]
+        external = state.external[seat]
         header = "Ply " & $(state.sim.ply + 1) & " of at most " &
           $config.maxPlies & "."
+
+      if external:
+        var sent = false
+        withLock stateLock:
+          if state.playerSockets.hasKey(seat):
+            inc state.decisionId
+            state.pendingSeat = seat
+            state.pendingAccepted = false
+            state.pendingSay = ""
+            state.playerSockets[seat].send($ %*{
+              "type": "observation",
+              "id": state.decisionId,
+              "observation": state.playerObservation(seat)
+            })
+            sent = true
+        let replyDeadline = min(epochTime() + config.llmTimeoutSeconds.float,
+          playDeadline)
+        var accepted = false
+        var action: Move
+        var say = ""
+        while sent and epochTime() < replyDeadline:
+          withLock stateLock:
+            accepted = state.pendingAccepted
+            if accepted:
+              action = state.pendingMove
+              say = state.pendingSay
+          if accepted:
+            break
+          sleep(50)
+        withLock stateLock:
+          state.pendingSeat = -1
+          state.pendingAccepted = false
+          var applied: Move
+          if accepted:
+            state.sim.recordSay(seat, say)
+            applied = action
+          else:
+            applied = client.scriptedAction(state.sim, seat).move
+          echo "focus: external ", (if accepted: "accepted" else: "fallback"),
+            " seat ", seat
+          state.sim.applyMove(seat, applied)
+          echo "focus: ply ", state.sim.ply, " seat ", seat, " ",
+            moveText(applied),
+            " at ", (epochTime() - gameStart).int, "s"
+          state.broadcastLocked()
+        if config.turnDelayMs > 0:
+          sleep(config.turnDelayMs)
+        continue
 
       ## The slow part (Claude) runs outside the lock on a snapshot; only
       ## this thread mutates the sim, so the snapshot cannot go stale.
@@ -366,7 +438,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "focus.player.v1",
+        "protocol": "focus.player.v2",
         "slot": slot,
         "name": state.sim.names[slot],
         "maxPlies": state.config.maxPlies,
@@ -419,8 +491,29 @@ proc websocketHandler(
           withLock stateLock:
             state.prompts[slot] = prompt
             state.scripted[slot] = scripted
+            state.registered[slot] = true
+            state.external[slot] = false
           echo "focus: slot ", slot, " delivered a prompt (",
             prompt.len, " chars", (if scripted: ", scripted" else: ""), ")"
+        elif payload{"type"}.getStr() == "register" and
+            payload["control"].getStr() == "external":
+          withLock stateLock:
+            state.registered[slot] = true
+            state.external[slot] = true
+          echo "focus: slot ", slot, " registered external policy"
+        elif payload{"type"}.getStr() == "action":
+          let id = payload["id"].getInt()
+          let moveId = payload["move"].getStr()
+          let say = cleanSay(payload{"say"}.getStr())
+          withLock stateLock:
+            if state.external[slot] and state.pendingSeat == slot and
+                state.decisionId == id and not state.pendingAccepted:
+              for move in state.sim.legalMoves(slot):
+                if moveText(move) == moveId:
+                  state.pendingMove = move
+                  state.pendingSay = say
+                  state.pendingAccepted = true
+                  break
       except CatchableError as error:
         echo "focus: ignoring bad player frame: ", error.msg
     of ErrorEvent:
@@ -488,6 +581,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
   state.scripted = newSeq[bool](config.players.len)
+  state.pendingSeat = -1
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)
