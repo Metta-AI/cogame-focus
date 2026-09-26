@@ -1,7 +1,0 @@
-services:
-  focus:
-    image: focus-jev-25001:local
-    platform: linux/amd64
-    build:
-      context: .
-      network: host

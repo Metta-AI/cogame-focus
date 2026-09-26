@@ -15,8 +15,7 @@ Players can register a prompt, the built-in scripted tactician, or an
 external action policy over `focus.player.v2`. Each acting external player
 receives the public board, rules, and exact legal move IDs, then returns a
 move ID and optional table talk. The game validates and applies the move.
-`PLAYER_JEV=1` runs Jev in the player container, where it ranks the legal
-moves. Prompt players retain the original game-hosted Claude path. The
+Prompt players retain the original game-hosted Claude path. The
 **scripted baseline** uses two-ply minimax on material, captures, and
 mobility; it also covers missing model credentials and timed-out actions.
 
@@ -32,8 +31,7 @@ aliases back to policy names; results are reported under policy names.
   replay derivation; shared by server, tests, and the wasm viewer
 - `src/focus/llm.nim` — Claude client + the scripted baseline bot
 - `src/focus/server.nim` — mummy HTTP/WS server (player, global, replay)
-- `src/focus_player.nim` — prompt, scripted, and Jev player entrypoint
-- `src/focus/jev_policy.nim` — Jev request and legal-move ranking
+- `src/focus_player.nim` — prompt and scripted player entrypoint
 - `client/` — shared canvas renderer + global/player/replay pages (the
   parley broadcast chrome around a Focus board)
 - `replay-viewer/` — static wasm replay viewer (`?replay=<url>`)
@@ -82,13 +80,4 @@ uv run coworld upload-policy <focus image> --name my-focus \
   --secret-env PLAYER_PROMPT="Your Focus strategy here."
 ```
 
-Field the scripted tactician with `--env PLAYER_SCRIPTED=1`, or Jev with
-`--env PLAYER_JEV=1` and a player-scoped TypeSafe credential or hosted
-inference sidecar. `PLAYER_PROMPT` gives Jev optional strategy guidance.
-The Jev credential belongs to the player policy, not the game.
-
-To check the player path without a provider credential, build the image and
-run `python3 tools/ci/smoke_jev.py /tmp/focus-jev-smoke`. The smoke runs Jev
-in each seat against the scripted tactician, serves a mock SystemOne response,
-and checks accepted actions, results, and replay. It does not measure Jev
-strategy or provider cost.
+Field the scripted tactician with `--env PLAYER_SCRIPTED=1`.
