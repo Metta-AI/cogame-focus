@@ -3,7 +3,7 @@
 ## certification) and a fieldable policy, so this is the completion path.
 
 import std/[json, monotimes, times, unittest]
-import focus/[llm, sim]
+import focus/[llm, sim, prompts]
 
 proc fixture(seed: int, maxPlies = 160): GameConfig =
   result = defaultGameConfig()
@@ -53,7 +53,7 @@ suite "scripted baseline":
     let client = newLlmClient(config)
     var sim = initSim(config)
     let decision = client.decide(sim, sim.turn, "attack the centre",
-      scripted = false)
+      scripted = false, selection = PromptSelection())
     sim.applyMove(sim.turn, decision.move)
 
   test "model replies parse into moves and drops":

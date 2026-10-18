@@ -14,10 +14,10 @@
 ## scripted plays it deliberately, LLM or not.
 
 import
-  std/[json, os, random, strutils],
+  std/[json, os, random, strutils, times],
   bitworld/runtime,
   curly,
-  sim
+  sim, prompts, evidence
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -35,6 +35,10 @@ type
     ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
+    attemptIds*: seq[string]
+    selectedAttemptId*: string
+    rawResponse: string
+    statusCode: int
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
@@ -341,11 +345,10 @@ const RulesText* = """Rules:
 - Table talk is heard by everyone. Bluff, needle, and mislead freely.
 """
 
-proc systemPrompt*(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int, selection: PromptSelection): string =
   let me = sim.seatName(seat)
   let them = sim.seatName(1 - seat)
-  "You are " & me & ", a cog playing Focus (Domination) against " & them &
-    ".\n\n" & RulesText & """
+  selection.introduction(me, them) & "\n\n" & RulesText & """
 
 OUTPUT FORMAT: reply with ONLY one JSON object, nothing else - no
 analysis, no explanation, no markdown fences, no text before or after
@@ -396,7 +399,8 @@ proc extractJsonObject(text: string): JsonNode =
       head.replace("\n", " "))
   parseJson(text[start .. stop])
 
-proc completeText(client: LlmClient, system, user: string, slot: int): string =
+proc completeText(client: LlmClient, system, user: string, slot, ply, retry: int,
+    identity, destination: string, selection: PromptSelection): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "system": system,
@@ -425,7 +429,17 @@ proc completeText(client: LlmClient, system, user: string, slot: int): string =
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
+  if destination.len > 0:
+    let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
+    writePrivate(destination, $(%*{
+      "event_type": "attempt_started", "visibility": "private", "attempt_id": identity,
+      "source_revision": getEnv("FOCUS_SOURCE_REVISION"), "seat": slot, "turn": ply, "retry": retry,
+      "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+      "prompt_template": selection.promptMetadata(system, user),
+      "request": {"transport": $client.transport, "model": model, "body": body}}) & "\n")
   let response = client.curl.post(url, headers, $body, client.timeoutSeconds)
+  client.rawResponse = response.body
+  client.statusCode = response.code
   if response.code == 401 or response.code == 403:
     let detail = response.body[0 .. min(response.body.high, 400)]
     if "Model access is denied" in response.body and
@@ -495,35 +509,70 @@ proc parseDecision*(sim: Sim, seat: int, payload: JsonNode): Decision =
   result.move = Move(kind: mkMove, fromCell: fromCell,
     toCell: step(fromCell, dir, count), count: count, dir: dir)
 
+proc decisionJson*(decision: Decision): JsonNode =
+  result = %*{"say": decision.say}
+  if decision.move.kind == mkPlace:
+    result["place"] = %cellName(decision.move.toCell)
+  else:
+    result["move"] = %*{"from": cellName(decision.move.fromCell),
+      "count": decision.move.count, "dir": $decision.move.dir}
+
 proc decide*(
   client: LlmClient,
   sim: Sim,
   seat: int,
   prompt: string,
   scripted: bool,
+  selection: PromptSelection,
   header = ""
 ): Decision =
   ## One decision for one seat. Never raises: any failure falls back to
   ## the scripted baseline so the game always advances.
+  client.attemptIds = @[]
+  client.selectedAttemptId = ""
   if scripted or client.disabled:
     return client.scriptedAction(sim, seat)
-  let system = systemPrompt(sim, seat)
+  let system = systemPrompt(sim, seat, selection)
   for attempt in 0 .. 1:
     var user = userPrompt(sim, seat, prompt, header)
     if attempt > 0:
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and one option copied from the legal list.")
+    let identity = $sim.ply & "-" & $seat & "-" & $attempt
+    let directory = getEnv("FOCUS_ATTEMPT_TRACE_DIR")
+    let destination = if directory.len > 0: directory / (identity & ".jsonl") else: ""
+    client.attemptIds.add(identity)
+    client.rawResponse = ""
+    client.statusCode = 0
+    let started = epochTime()
+    var text, failure: string
+    var payload, normalized = newJNull()
+    var selected = false
     try:
-      let payload = extractJsonObject(client.completeText(system, user, seat))
+      text = client.completeText(system, user, seat, sim.ply, attempt, identity, destination, selection)
+      payload = extractJsonObject(text)
       let decision = parseDecision(sim, seat, payload)
+      normalized = decisionJson(decision)
       ## Reject illegal picks here so the retry carries the hint.
       var probe = sim
       probe.applyMove(seat, decision.move)
+      selected = true
+      client.selectedAttemptId = identity
       return decision
     except CatchableError as error:
+      failure = error.msg
       echo "focus llm: seat ", seat, " attempt ", attempt, " failed: ",
         error.msg
       if client.disabled:
         break
+    finally:
+      if destination.len > 0:
+        appendPrivate(destination, %*{
+          "event_type": "attempt_finished", "attempt_id": identity,
+          "raw_response": client.rawResponse, "status_code": client.statusCode,
+          "response": text, "failure": failure, "parsed_action": payload,
+          "normalized_action": normalized, "selected": selected,
+          "latency_ms": int((epochTime() - started) * 1000.0),
+          "platform_call_id": newJNull(), "behavior_logprobs": newJNull()})
   echo "focus llm: seat ", seat, " falling back to scripted decision"
   client.scriptedAction(sim, seat)

@@ -26,6 +26,8 @@ aliases back to policy names; results are reported under policy names.
 
 ## Layout
 
+Prompt variants, collection, and private evidence: [training guide](docs/TRAINING.md).
+
 - `src/focus.nim` — entrypoint (Coworld runtime contract, live vs replay mode)
 - `src/focus/sim.nim` — pure rules: board, moves, cap, reserve, endings,
   replay derivation; shared by server, tests, and the wasm viewer

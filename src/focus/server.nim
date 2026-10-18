@@ -27,7 +27,7 @@ import
   curly,
   mummy,
   mummy/routers,
-  llm,
+  prompts, evidence, llm,
   sim
 
 const
@@ -36,6 +36,8 @@ const
 
 type
   GameState = object
+    tracePath: string
+    selection: PromptSelection
     config: GameConfig
     sim: Sim
     prompts: seq[string]
@@ -168,6 +170,26 @@ proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
   for frame in replayMatch(config, events):
     result.add(frame.tableStateJson())
 
+proc recordDecision(gs: GameState, before: Sim, seat: int, prompt, header: string,
+    proposal: JsonNode, origin: string, attempts: seq[string], selected: string) =
+  if gs.tracePath.len == 0: return
+  let system = systemPrompt(before, seat, gs.selection)
+  let user = userPrompt(before, seat, prompt, header)
+  let eventStart = before.events.len
+  let installed = gs.sim.installedAction(eventStart)
+  var events = newJArray()
+  for index in eventStart ..< gs.sim.events.len: events.add(eventToJson(gs.sim.events[index]))
+  appendPrivate(gs.tracePath, %*{
+    "event_type": "host_decision", "visibility": "private", "seat": seat, "turn": before.ply,
+    "observation": before.tableStateJson(),
+    "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    "prompt_template": gs.selection.promptMetadata(system, user),
+    "proposal": proposal, "executed_action": installed, "policy_origin": origin,
+    "attempt_ids": attempts,
+    "selected_attempt_id": (if selected.len > 0 and installed == proposal: %selected else: newJNull()),
+    "event_start": eventStart, "event_end": gs.sim.events.len, "events": events,
+    "resulting_state": gs.sim.tableStateJson(), "terminal": gs.sim.done})
+
 proc finishEpisode(runtimeConfig: RuntimeConfig) =
   var results: JsonNode
   var replayData: string
@@ -176,6 +198,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
       return
     state.finished = true
     results = state.sim.resultsJson()
+    if state.tracePath.len > 0:
+      appendPrivate(state.tracePath, %*{"event_type": "host_finished", "results": results})
     replayData = state.replayPayload(results)
 
     ## Send final frames to players BEFORE writing artifacts: the hosted
@@ -333,6 +357,9 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           echo "focus: external ", (if accepted: "accepted" else: "fallback"),
             " seat ", seat
           state.sim.applyMove(seat, applied)
+          state.recordDecision(simCopy, seat, seatPrompt, header,
+            (if accepted: decisionJson(Decision(move: action, say: say)) else: newJNull()),
+            (if accepted: "external" else: "scripted-fallback"), @[], "")
           echo "focus: ply ", state.sim.ply, " seat ", seat, " ",
             moveText(applied),
             " at ", (epochTime() - gameStart).int, "s"
@@ -344,19 +371,27 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## The slow part (Claude) runs outside the lock on a snapshot; only
       ## this thread mutates the sim, so the snapshot cannot go stale.
       let decision = client.decide(simCopy, seat, seatPrompt,
-        scripted = seatScripted, header = header)
+        scripted = seatScripted, selection = state.selection, header = header)
 
       withLock stateLock:
         echo "focus: ply ", state.sim.ply + 1, " seat ", seat, " ",
           moveText(decision.move), " at ", (epochTime() - gameStart).int, "s"
+        var fallbackUsed = false
         state.sim.recordSay(seat, decision.say)
         try:
           state.sim.applyMove(seat, decision.move)
         except FocusError as error:
           echo "focus: llm move rejected (", error.msg,
             "); using scripted fallback"
+          fallbackUsed = true
           let fallback = client.scriptedAction(state.sim, seat)
           state.sim.applyMove(seat, fallback.move)
+        let origin = if fallbackUsed or client.attemptIds.len > 0 and client.selectedAttemptId.len == 0:
+            "scripted-fallback"
+          elif client.selectedAttemptId.len > 0: "model"
+          else: "scripted"
+        state.recordDecision(simCopy, seat, seatPrompt, header, decisionJson(decision), origin,
+          client.attemptIds, (if fallbackUsed: "" else: client.selectedAttemptId))
         state.broadcastLocked()
 
       if config.turnDelayMs > 0:
@@ -578,6 +613,12 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   if config.tokens.len != config.players.len:
     raise newException(FocusError, "tokens and players must align")
   state.config = config
+  state.selection = promptSelection(parseJson(runtimeConfig.config))
+  state.tracePath = getEnv("FOCUS_HOST_TRACE_PATH")
+  if state.tracePath.len > 0:
+    writePrivate(state.tracePath, $(%*{"event_type": "host_started", "visibility": "private",
+      "source_revision": getEnv("FOCUS_SOURCE_REVISION"), "seed": config.seed,
+      "prompt_selection": state.selection.selectionMetadata()}) & "\n")
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
   state.scripted = newSeq[bool](config.players.len)
