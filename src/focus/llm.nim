@@ -14,10 +14,10 @@
 ## scripted plays it deliberately, LLM or not.
 
 import
-  std/[json, os, random, strutils, times],
+  std/[json, os, random, strutils],
   bitworld/runtime,
   curly,
-  sim, prompts, evidence
+  sim, prompts
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -35,10 +35,6 @@ type
     ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
-    attemptIds*: seq[string]
-    selectedAttemptId*: string
-    rawResponse: string
-    statusCode: int
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
@@ -326,29 +322,23 @@ proc renderLegalMoves(sim: Sim, seat: int): string =
       " reserve pieces on any playable square (it goes on top).")
   lines.join("\n")
 
-const RulesText* = """Rules:
-- 8x8 board with the three squares in each corner missing (a1 b1 a2, g1 h1
-  h2, a8 b8 a7, g8 h8 h7 are NOT playable). Files a-h, ranks 1-8; N is
-  toward rank 8, E toward file h.
-- Pieces stack. Whoever owns the TOP piece controls the stack.
-- On your turn, MOVE: take the top k pieces (1..height) of a stack you
-  control and move them exactly k squares in one direction (N/S/E/W),
-  jumping over anything, landing on top of whatever is there. The pieces
-  you carry may include enemy pieces underneath your top piece.
-- If a stack ends taller than 5, pieces come off the BOTTOM: your own go
-  to your reserve, enemy pieces are captured for good.
-- Or DROP: instead of moving, place one reserve piece on top of any
-  playable square.
-- A player who cannot move (controls no stack, no reserve) LOSES. At the
-  ply cap the side with more material (pieces in stacks it controls plus
-  reserve) wins.
-- Table talk is heard by everyone. Bluff, needle, and mislead freely.
-"""
+const BoardRules = "Rules:\n- 8x8 board with the three squares in each corner missing (a1 b1 a2, g1 h1\n  h2, a8 b8 a7, g8 h8 h7 are NOT playable). Files a-h, ranks 1-8; N is\n  toward rank 8, E toward file h.\n"
+const CanonicalPlayRules = "- Pieces stack. Whoever owns the TOP piece controls the stack.\n- On your turn, MOVE: take the top k pieces (1..height) of a stack you\n  control and move them exactly k squares in one direction (N/S/E/W),\n  jumping over anything, landing on top of whatever is there. The pieces\n  you carry may include enemy pieces underneath your top piece.\n- If a stack ends taller than 5, pieces come off the BOTTOM: your own go\n  to your reserve, enemy pieces are captured for good.\n- Or DROP: instead of moving, place one reserve piece on top of any\n  playable square.\n- A player who cannot move (controls no stack, no reserve) LOSES. At the\n  ply cap the side with more material (pieces in stacks it controls plus\n  reserve) wins.\n- Table talk is heard by everyone. Bluff, needle, and mislead freely.\n"
+const RulesText* = BoardRules & CanonicalPlayRules
 
 proc systemPrompt*(sim: Sim, seat: int, selection: PromptSelection): string =
+  let playRules = case selection.selectedVariant
+    of pvCanonical: CanonicalPlayRules
+    of pvPlain: "Stacks belong to whoever owns their top piece. To MOVE, take the top k pieces of a controlled stack (1 through its height) and travel exactly k squares N, S, E, or W. Jump over intervening pieces and land on top of the destination; enemy pieces below your top piece may travel with you. Trim any stack taller than five from its bottom: return your own pieces to reserve and permanently capture enemy pieces. Alternatively DROP one reserve piece onto any playable square. Having no controlled stack and no reserve means no move and a loss. At the ply cap, more material wins: pieces in controlled stacks plus reserve. Everyone hears table talk; bluffing, needling, and misleading are allowed.\n"
+    of pvNumbered: "1. Control a stack by owning its top piece.\n2. MOVE the top k pieces, 1..height, from a controlled stack exactly k squares N/S/E/W. Jump intervening pieces and land on the destination stack; carried lower pieces may belong to the enemy.\n3. Trim stacks above five from the bottom: own pieces to reserve, enemy pieces permanently captured.\n4. Instead of moving, DROP one reserve piece on any playable square.\n5. No controlled stacks and no reserve means no move and a loss. At the ply cap, compare controlled-stack pieces plus reserve; more wins.\n6. Everyone hears table talk. Bluff, needle, and mislead freely.\n"
+    of pvQuestions: "Who controls a stack? The owner of its top piece. How do you MOVE? Take its top k pieces, 1..height, and jump exactly k squares N/S/E/W onto the destination; lower enemy pieces travel too. What if the stack exceeds five? Remove bottom pieces: yours enter reserve, enemies are captured permanently. What is the alternative? DROP one reserve piece on any playable square. How do you lose? No controlled stack and no reserve leaves no move. How does the ply cap settle? More pieces in controlled stacks plus reserve wins. Who hears talk? Everyone; bluffing, needling, and misleading are allowed.\n"
+    of pvReordered: "Win by leaving the opponent unable to move: no controlled stack and no reserve. At the ply cap, more material (pieces in controlled stacks plus reserve) wins. A stack is controlled by its top piece's owner. Either DROP one reserve piece onto any playable square or MOVE the top k pieces of a controlled stack exactly k squares N/S/E/W, with 1 <= k <= height. Jump over intervening pieces, land on top, and carry lower enemy pieces along. Remove excess above five from the bottom: own pieces return to reserve, enemy pieces are captured permanently. Table talk is public; bluff, needle, and mislead freely.\n"
+    of pvHeldoutBriefing: "Control follows the top piece of each stack. On a move, carry the top k pieces of one you control exactly k squares along a cardinal direction, for any k from one to its height. You jump intervening pieces and land above the destination stack; enemy pieces below your top piece can accompany you. A stack over five sheds bottom pieces, sending yours to reserve and capturing enemy pieces permanently. You may instead drop one reserve piece on any playable square. Losing all controlled stacks and reserves leaves no move and loses. The ply cap awards the win to greater controlled-stack material plus reserve. All table talk is public, including bluffs, needling, and deception.\n"
+    of pvHeldoutReference: "Control: top-piece owner. MOVE: top k pieces of a controlled stack, k in 1..height, exactly k squares N/S/E/W; jump intervening pieces, land atop destination, carry any lower enemy pieces too. Overflow: trim above five from bottom; own pieces to reserve, enemy pieces permanently captured. DROP alternative: one reserve piece onto any playable square. Loss: no controlled stack and no reserve, hence no move. Ply-cap winner: greater controlled-stack piece count plus reserve. Talk: public; bluffing, needling, and misleading allowed.\n"
+    of pvMixed: raise newException(ValueError, "mixed selection must resolve to a training wording")
   let me = sim.seatName(seat)
   let them = sim.seatName(1 - seat)
-  selection.introduction(me, them) & "\n\n" & RulesText & """
+  selection.introduction(me, them) & "\n\n" & BoardRules & playRules & """
 
 OUTPUT FORMAT: reply with ONLY one JSON object, nothing else - no
 analysis, no explanation, no markdown fences, no text before or after
@@ -399,8 +389,7 @@ proc extractJsonObject(text: string): JsonNode =
       head.replace("\n", " "))
   parseJson(text[start .. stop])
 
-proc completeText(client: LlmClient, system, user: string, slot, ply, retry: int,
-    identity, destination: string, selection: PromptSelection): string =
+proc completeText(client: LlmClient, system, user: string, slot: int): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "system": system,
@@ -429,17 +418,7 @@ proc completeText(client: LlmClient, system, user: string, slot, ply, retry: int
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
-  if destination.len > 0:
-    let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
-    writePrivate(destination, $(%*{
-      "event_type": "attempt_started", "visibility": "private", "attempt_id": identity,
-      "source_revision": getEnv("FOCUS_SOURCE_REVISION"), "seat": slot, "turn": ply, "retry": retry,
-      "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-      "prompt_template": selection.promptMetadata(system, user),
-      "request": {"transport": $client.transport, "model": model, "body": body}}) & "\n")
   let response = client.curl.post(url, headers, $body, client.timeoutSeconds)
-  client.rawResponse = response.body
-  client.statusCode = response.code
   if response.code == 401 or response.code == 403:
     let detail = response.body[0 .. min(response.body.high, 400)]
     if "Model access is denied" in response.body and
@@ -528,8 +507,6 @@ proc decide*(
 ): Decision =
   ## One decision for one seat. Never raises: any failure falls back to
   ## the scripted baseline so the game always advances.
-  client.attemptIds = @[]
-  client.selectedAttemptId = ""
   if scripted or client.disabled:
     return client.scriptedAction(sim, seat)
   let system = systemPrompt(sim, seat, selection)
@@ -538,41 +515,17 @@ proc decide*(
     if attempt > 0:
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and one option copied from the legal list.")
-    let identity = $sim.ply & "-" & $seat & "-" & $attempt
-    let directory = getEnv("FOCUS_ATTEMPT_TRACE_DIR")
-    let destination = if directory.len > 0: directory / (identity & ".jsonl") else: ""
-    client.attemptIds.add(identity)
-    client.rawResponse = ""
-    client.statusCode = 0
-    let started = epochTime()
-    var text, failure: string
-    var payload, normalized = newJNull()
-    var selected = false
     try:
-      text = client.completeText(system, user, seat, sim.ply, attempt, identity, destination, selection)
-      payload = extractJsonObject(text)
+      let payload = extractJsonObject(client.completeText(system, user, seat))
       let decision = parseDecision(sim, seat, payload)
-      normalized = decisionJson(decision)
       ## Reject illegal picks here so the retry carries the hint.
       var probe = sim
       probe.applyMove(seat, decision.move)
-      selected = true
-      client.selectedAttemptId = identity
       return decision
     except CatchableError as error:
-      failure = error.msg
       echo "focus llm: seat ", seat, " attempt ", attempt, " failed: ",
         error.msg
       if client.disabled:
         break
-    finally:
-      if destination.len > 0:
-        appendPrivate(destination, %*{
-          "event_type": "attempt_finished", "attempt_id": identity,
-          "raw_response": client.rawResponse, "status_code": client.statusCode,
-          "response": text, "failure": failure, "parsed_action": payload,
-          "normalized_action": normalized, "selected": selected,
-          "latency_ms": int((epochTime() - started) * 1000.0),
-          "platform_call_id": newJNull(), "behavior_logprobs": newJNull()})
   echo "focus llm: seat ", seat, " falling back to scripted decision"
   client.scriptedAction(sim, seat)

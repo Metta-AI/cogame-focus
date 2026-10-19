@@ -17,7 +17,7 @@ type
     seed*: int
 
 const
-  PromptBankVersion* = "focus-rules-v1"
+  PromptBankVersion* = "focus-rules-v2"
 
 proc promptSelection*(node: JsonNode): PromptSelection =
   if node.kind != JObject:
