@@ -21,13 +21,6 @@ if __name__ == "__main__":
             )
             manifest = json.loads((output / "manifest.json").read_text())
             assert len(manifest["runs"]) == 10
-            assert [run["prompt_selection"]["variant"] for run in manifest["runs"]] == [
-                "canonical",
-                "plain",
-                "numbered",
-                "questions",
-                "reordered",
-            ] * 2
             assert all(
                 0 < run["decisions"] <= 120
                 and len(run["scores"]) == 2
@@ -43,6 +36,14 @@ if __name__ == "__main__":
                 ]
                 assert len(rows) == manifest[split + "_examples"] > 0
                 families[split] = {row["seed"] for row in rows}
+                if split == "train":
+                    assert {row["prompt_template"]["variant"] for row in rows} == {
+                        "canonical",
+                        "plain",
+                        "numbered",
+                        "questions",
+                        "reordered",
+                    }
                 for row in rows:
                     assert row["game"] == "focus"
                     assert [message["role"] for message in row["prompt"]] == [

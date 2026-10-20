@@ -29,7 +29,8 @@ normal early endings. Exports retain the original `train.jsonl`,
 wording metadata. Every teacher move passes the production parser unchanged
 and is applied by the engine.
 
-Mixed selection cycles through the five training wordings once per game.
+Mixed selection cycles through the five training wordings separately within each
+split. Episode IDs include wording to distinguish matched collections.
 Seed families exclude wording; multiples of five enter validation.
 Output directories are private. Existing destinations, fewer than ten games,
 and held-out wordings are rejected.
