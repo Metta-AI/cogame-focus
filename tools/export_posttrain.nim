@@ -69,7 +69,8 @@ when isMainModule:
       let user = userPrompt(sim, seat, OperatorPrompt,
         "Ply " & $(sim.ply + 1) & " of at most " & $config.maxPlies & ".")
       rows.add($(%*{
-        "episode_id": "focus-standard-" & $seed & "-" & $wording.selectedVariant,
+        "episode_id": "focus-standard-" & $seed & "-" & $wording.variant & "-" &
+            $wording.selectedVariant & "-" & $wording.seed,
         "seed": "focus-" & $seed,
         "decision_id": sim.ply,
         "prompt": [

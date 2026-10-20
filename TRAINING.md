@@ -18,14 +18,8 @@ games stay in one split. The output manifest records source revision, scores,
 ending reason, and row counts. Existing output directories are never
 overwritten.
 
-Train the output with Metta post-training:
-
-```sh
-nix develop -c uv run --package metta-posttrain --extra train \
-  python -m metta_posttrain.train --dataset /tmp/focus-standard \
-  --output /tmp/focus-adapter --model Qwen/Qwen3-0.6B \
-  --max-steps 100 --max-length 4096
-```
+Language training is owned by the [Metta posttraining research package](https://github.com/Metta-AI/posttraining-research/tree/main/packages/metta-posttraining).
+Use its documented training and source-admission workflows from that checkout.
 
 Ten complete games yielded 884 training and 240 validation examples. All
 1,124 examples fit the Qwen2.5-0.5B-Instruct tokenizer in 4,096 tokens; the
