@@ -2,22 +2,30 @@
 ## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES [FIRST_SEED]
 
 import std/[json, os, osproc, strutils]
-import focus/[llm, sim]
+import focus/[llm, sim, prompts]
 
 const OperatorPrompt = "Choose legal moves to maximize your score over the complete game."
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len notin 2 .. 3:
-    quit("usage: export_posttrain OUTPUT GAMES [FIRST_SEED]", 1)
+  if args.len notin [2, 3, 5]:
+    quit("usage: export_posttrain OUTPUT GAMES [FIRST_SEED [PROMPT_VARIANT PROMPT_SEED]]", 1)
   let output = args[0]
   let games = parseInt(args[1])
-  let firstSeed = if args.len == 3: parseInt(args[2]) else: 1
+  let firstSeed = if args.len >= 3: parseInt(args[2]) else: 1
+  let selection = promptSelection(if args.len == 5:
+    %*{"promptVariant": args[3], "promptSeed": parseInt(args[4])} else: newJObject())
+  if selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference}:
+    raise newException(ValueError, "held-out wording is evaluation-only")
+  let status = execCmdEx("git status --porcelain")
+  doAssert status.exitCode == 0 and status.output.strip().len == 0,
+    "Commit source before generating a pinned corpus"
   if games < 10 or firstSeed < 1:
     quit("at least ten games and a positive first seed are required", 1)
   if dirExists(output) or fileExists(output):
     quit("output already exists: " & output, 1)
   createDir(output)
+  setFilePermissions(output, {fpUserRead, fpUserWrite, fpUserExec})
   let sourceRevision = execProcess("git rev-parse HEAD").strip()
   let manifest = parseFile("coworld_manifest_template.json")
   let variant = manifest["variants"][0]
@@ -26,7 +34,13 @@ when isMainModule:
     trainRows: seq[string]
     validationRows: seq[string]
     runs = newJArray()
+    wordingCounts: array[2, int]
   for seed in firstSeed ..< firstSeed + games:
+    var wording = selection
+    let partition = ord(seed mod 5 == 0)
+    if wording.variant == pvMixed:
+      wording.seed += wordingCounts[partition]
+    inc wordingCounts[partition]
     var config = defaultGameConfig()
     let runtimeConfig = copy(variant["game_config"])
     runtimeConfig["tokens"] = %*["t0", "t1"]
@@ -51,18 +65,21 @@ when isMainModule:
         }
       let parsed = parseDecision(sim, seat, completion)
       doAssert parsed == teacher
+      let system = systemPrompt(sim, seat, wording)
+      let user = userPrompt(sim, seat, OperatorPrompt,
+        "Ply " & $(sim.ply + 1) & " of at most " & $config.maxPlies & ".")
       rows.add($(%*{
-        "episode_id": "focus-standard-" & $seed,
-        "seed": "focus-standard-" & $seed,
+        "episode_id": "focus-standard-" & $seed & "-" & $wording.variant & "-" &
+            $wording.selectedVariant & "-" & $wording.seed,
+        "seed": "focus-" & $seed,
         "decision_id": sim.ply,
         "prompt": [
-          {"role": "system", "content": systemPrompt(sim, seat)},
-          {"role": "user", "content": userPrompt(sim, seat,
-            OperatorPrompt, "Ply " & $(sim.ply + 1) & " of at most " &
-              $config.maxPlies & ".")}
+          {"role": "system", "content": system},
+          {"role": "user", "content": user}
         ],
         "completion": [{"role": "assistant", "content": $completion}],
         "game": "focus",
+        "prompt_template": wording.promptMetadata(system, user),
         "action_schema_revision": "focus-move-v1"
       }))
       sim.recordSay(seat, parsed.say)
@@ -74,7 +91,8 @@ when isMainModule:
     else:
       trainRows.add(rows)
     runs.add(%*{"seed": seed, "decisions": rows.len,
-      "scores": outcome["scores"], "reason": sim.reason})
+      "scores": outcome["scores"], "reason": sim.reason,
+      "prompt_selection": wording.selectionMetadata()})
   writeFile(output / "train.jsonl", trainRows.join("\n") & "\n")
   writeFile(output / "validation.jsonl", validationRows.join("\n") & "\n")
   writeFile(output / "manifest.json", pretty(%*{

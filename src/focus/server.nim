@@ -27,7 +27,7 @@ import
   curly,
   mummy,
   mummy/routers,
-  llm,
+  prompts, llm,
   sim
 
 const
@@ -36,6 +36,7 @@ const
 
 type
   GameState = object
+    selection: PromptSelection
     config: GameConfig
     sim: Sim
     prompts: seq[string]
@@ -344,7 +345,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## The slow part (Claude) runs outside the lock on a snapshot; only
       ## this thread mutates the sim, so the snapshot cannot go stale.
       let decision = client.decide(simCopy, seat, seatPrompt,
-        scripted = seatScripted, header = header)
+        scripted = seatScripted, selection = state.selection, header = header)
 
       withLock stateLock:
         echo "focus: ply ", state.sim.ply + 1, " seat ", seat, " ",
@@ -577,6 +578,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
 proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   if config.tokens.len != config.players.len:
     raise newException(FocusError, "tokens and players must align")
+  state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)

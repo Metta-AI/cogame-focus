@@ -3,7 +3,7 @@
 ## focus-train-bridge coworld_manifest_template.json [standard]
 
 import std/[json, os]
-import focus/[llm, sim]
+import focus/[llm, sim, prompts]
 
 const
   OperatorPrompt = "Choose legal moves to maximize your score over the complete game."
@@ -23,9 +23,9 @@ proc actionOf(move: Move): JsonNode =
     %*{"move": {"from": cellName(move.fromCell),
       "count": move.count, "dir": $move.dir}}
 
-proc decision(game: Sim, id: int): JsonNode =
+proc decision(game: Sim, id: int, selection: PromptSelection): JsonNode =
   let seat = game.turn
-  %*{
+  result = %*{
     "kind": "decision", "game": "focus", "decision_id": id,
     "seat": seat, "engine_seat": seat, "turn": game.ply,
     "semantic_view": {
@@ -35,7 +35,7 @@ proc decision(game: Sim, id: int): JsonNode =
     },
     "inbox": [],
     "messages": [
-      {"role": "system", "content": systemPrompt(game, seat)},
+      {"role": "system", "content": systemPrompt(game, seat, selection)},
       {"role": "user", "content": userPrompt(game, seat, OperatorPrompt,
         "Ply " & $(game.ply + 1) & " of at most " & $game.config.maxPlies & ".")}
     ],
@@ -47,6 +47,10 @@ proc decision(game: Sim, id: int): JsonNode =
     },
     "typed_question": newJNull()
   }
+
+  result["semantic_view"]["prompt_template"] = selection.promptMetadata(
+    result["messages"][0]["content"].getStr(), result["messages"][1]["content"].getStr())
+  result["action_schema"]["properties"] = %*{"say": {"type": "string", "maxLength": 160}}
 
 proc encoding(game: Sim, id: int): JsonNode =
   let seat = game.turn
@@ -88,15 +92,18 @@ proc encoding(game: Sim, id: int): JsonNode =
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len notin 1 .. 2:
-    quit("usage: focus-train-bridge MANIFEST [VARIANT]", 1)
-  let variant = if args.len == 2: args[1] else: "standard"
+  if args.len notin 1 .. 3:
+    quit("usage: focus-train-bridge MANIFEST [VARIANT [text]]", 1)
+  let textMode = args.len == 3
+  if textMode: doAssert args[2] == "text"
+  let variant = if args.len >= 2: args[1] else: "standard"
   let manifest = parseFile(args[0])
   var variantConfig: JsonNode
   for entry in manifest["variants"]:
     if entry["id"].getStr() == variant:
       variantConfig = entry["game_config"]
   doAssert not variantConfig.isNil, "unknown variant: " & variant
+  var selection: PromptSelection
   var game: Sim
   var client: LlmClient
   var id = 0
@@ -106,6 +113,10 @@ when isMainModule:
     case request["kind"].getStr()
     of "reset":
       doAssert request["players"].getInt() == Seats
+      selection = promptSelection(request)
+      if selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference} and
+          request{"split"}.getStr("train") == "train":
+        raise newException(ValueError, "held-out wording cannot be used for training")
       var config = defaultGameConfig()
       let runtimeConfig = copy(variantConfig)
       runtimeConfig["tokens"] = %*["t0", "t1"]
@@ -115,13 +126,14 @@ when isMainModule:
       game = initSim(config)
       client = newScriptedClient(config)
       id = 0
-      response = game.decision(id)
+      response = game.decision(id, selection)
     of "encode":
       doAssert not game.done
       response = game.encoding(id)
     of "teacher":
       doAssert not game.done
-      response = %*{"response": $actionOf(client.scriptedAction(game, game.turn).move)}
+      let teacher = client.scriptedAction(game, game.turn)
+      response = %*{"response": $(if textMode: decisionJson(teacher) else: actionOf(teacher.move))}
     of "step":
       doAssert not game.done and request["decision_id"].getInt() == id
       let action = parseJson(request["response"].getStr())
@@ -139,8 +151,8 @@ when isMainModule:
           scores[$slot] = outcome["scores"][slot]
         observation = %*{"kind": "terminal", "scores": scores}
       else:
-        observation = game.decision(id)
-      response = %*{"kind": "accepted", "action": action,
+        observation = game.decision(id, selection)
+      response = %*{"kind": "accepted", "action": (if textMode: decisionJson(parsed) else: action),
         "observation": observation}
     else:
       raise newException(ValueError, "unknown command: " & request["kind"].getStr())
