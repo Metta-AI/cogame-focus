@@ -26,7 +26,8 @@ aliases back to policy names; results are reported under policy names.
 
 ## Layout
 
-Prompt variants, collection, and teacher exports: [training guide](docs/TRAINING.md).
+Private native real-model capture, prompt variants and historical teacher exports:
+[training guide](docs/TRAINING.md).
 
 - `src/focus.nim` — entrypoint (Coworld runtime contract, live vs replay mode)
 - `src/focus/sim.nim` — pure rules: board, moves, cap, reserve, endings,

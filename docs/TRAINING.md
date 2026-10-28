@@ -1,5 +1,46 @@
 # Focus training
 
+## Native real-model capture
+
+Use the production game and `/bin/focus-player` with `PLAYER_PROMPT`, omitting
+`PLAYER_SCRIPTED`. The platform supplies the existing game-owned LLM sidecar.
+Set the game's private `COGAME_SAVE_TRAJECTORY_URI` destination; absent a
+destination, capture is disabled.
+
+Capture retains actual request bodies, exposed call-ID headers, received
+response bodies, retries and the frozen pre-move public board with the acting
+seat's private operator prompt. It joins these to the actual applied move and
+speech. Native parser normalization, scripted fallback and engine-rejected
+proposals cannot become real-model targets. Unattributed external actions stay
+unknown; missing usage, model/token identities and likelihoods are not invented.
+Inference, legality checks, the tactician fallback, pacing and rules remain
+unchanged. Use `collect-hosted`, `prepare-hosted-data` and SLIME through the
+research package for authenticated receipt admission and token/mask checks.
+
+The opening board is fixed. Seeds affect aliases and the first mover, not a
+fresh random board. Native capture groups physical families by initial board,
+first mover and actual sampled ply cap; alias-only seeds and wording changes
+share one family. Do not count repeated aliases as independent scenarios.
+The two first-mover configurations are limited opening strata, not broad
+physical generalization. Historical scripted exports retain their old labels.
+
+Run the complete native system fixture with production binaries:
+
+```sh
+nim c -d:release --path:src -o:/tmp/focus src/focus.nim
+nim c -d:release --path:src -o:/tmp/focus-player src/focus_player.nim
+python3 tools/test_native_capture.py /tmp/focus /tmp/focus-player /tmp/focus-native-capture
+```
+
+Eight full 120-ply games check capture on/off replay and outcome equality,
+retries, fallback, normalized speech, private operator isolation, missing usage,
+offline no-evidence fallback and family equality across alias-only seeds.
+Fixture replies are synthetic software evidence, never training teachers.
+Output directories must be new. Capture alone does not establish teacher
+strength, online RL readiness or hosted learned-checkpoint parity.
+
+## Historical scripted training
+
 Five training wordings (`canonical`, `plain`, `numbered`, `questions`,
 `reordered`) vary identity, stack control, movement, overflow, reserve drops,
 and endings. The v2 bank preserves board coordinates, game facts, strategic

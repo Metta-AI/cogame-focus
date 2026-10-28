@@ -27,7 +27,7 @@ import
   curly,
   mummy,
   mummy/routers,
-  prompts, llm,
+  prompts, llm, training,
   sim
 
 const
@@ -36,6 +36,7 @@ const
 
 type
   GameState = object
+    trajectory: DecisionTrajectory
     selection: PromptSelection
     config: GameConfig
     sim: Sim
@@ -178,6 +179,7 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     state.finished = true
     results = state.sim.resultsJson()
     replayData = state.replayPayload(results)
+    state.trajectory.finishNativeTrajectory(state.sim)
 
     ## Send final frames to players BEFORE writing artifacts: the hosted
     ## worker tears player pods down as soon as results.json exists, and
@@ -294,6 +296,10 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         header = "Ply " & $(state.sim.ply + 1) & " of at most " &
           $config.maxPlies & "."
 
+      var captureView: JsonNode
+      if not state.trajectory.isNil:
+        captureView = %*{"view":simCopy.tableStateJson(),
+          "operator_prompt":seatPrompt, "header":header}
       if external:
         var sent = false
         withLock stateLock:
@@ -334,6 +340,10 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           echo "focus: external ", (if accepted: "accepted" else: "fallback"),
             " seat ", seat
           state.sim.applyMove(seat, applied)
+          if not state.trajectory.isNil:
+            state.trajectory.recordAppliedDecision(state.selection, simCopy.ply, seat,
+              config.players[seat].name, captureView,
+              Decision(move:applied, say:(if accepted:say else:"")).decisionJson(), not accepted, @[])
           echo "focus: ply ", state.sim.ply, " seat ", seat, " ",
             moveText(applied),
             " at ", (epochTime() - gameStart).int, "s"
@@ -351,6 +361,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         echo "focus: ply ", state.sim.ply + 1, " seat ", seat, " ",
           moveText(decision.move), " at ", (epochTime() - gameStart).int, "s"
         state.sim.recordSay(seat, decision.say)
+        var applied = decision.move
+        var engineFallback = false
         try:
           state.sim.applyMove(seat, decision.move)
         except FocusError as error:
@@ -358,6 +370,13 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             "); using scripted fallback"
           let fallback = client.scriptedAction(state.sim, seat)
           state.sim.applyMove(seat, fallback.move)
+          applied = fallback.move
+          engineFallback = true
+        if not state.trajectory.isNil:
+          state.trajectory.recordAppliedDecision(state.selection, simCopy.ply, seat,
+            config.players[seat].name, captureView,
+            Decision(move:applied, say:decision.say).decisionJson(),
+            engineFallback or client.nativeFallback, client.nativeAttempts)
         state.broadcastLocked()
 
       if config.turnDelayMs > 0:
@@ -581,6 +600,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
+  state.trajectory = initNativeTrajectory(config)
   state.prompts = newSeq[string](config.players.len)
   state.scripted = newSeq[bool](config.players.len)
   state.pendingSeat = -1
