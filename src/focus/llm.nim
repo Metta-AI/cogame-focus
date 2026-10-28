@@ -14,10 +14,10 @@
 ## scripted plays it deliberately, LLM or not.
 
 import
-  std/[json, os, random, strutils],
+  std/[json, options, os, random, strutils, times],
   bitworld/runtime,
   curly,
-  sim, prompts
+  sim, prompts, training
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -35,6 +35,8 @@ type
     ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
+    nativeAttempts*: seq[DecisionAttempt]
+    nativeFallback*: bool
     curl: Curly
     transport: LlmTransport
     apiKey: string          ## anthropic transport
@@ -389,7 +391,8 @@ proc extractJsonObject(text: string): JsonNode =
       head.replace("\n", " "))
   parseJson(text[start .. stop])
 
-proc completeText(client: LlmClient, system, user: string, slot: int): string =
+proc completeText(client: LlmClient, system, user: string, slot: int,
+    policy: string, ply, retry: int): string =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
     "system": system,
@@ -418,7 +421,12 @@ proc completeText(client: LlmClient, system, user: string, slot: int): string =
     headers["x-api-key"] = client.apiKey
     headers["anthropic-version"] = AnthropicVersion
     url = AnthropicUrl
+  let capture = getEnv(CogameSaveTrajectoryUriEnv).len > 0
+  if capture: client.nativeAttempts.add(nativeAttempt(policy, ply, slot, retry, $body))
+  let started = epochTime()
   let response = client.curl.post(url, headers, $body, client.timeoutSeconds)
+  if capture:
+    client.nativeAttempts[^1].receiveNativeResponse(response, "", int((epochTime() - started) * 1000))
   if response.code == 401 or response.code == 403:
     let detail = response.body[0 .. min(response.body.high, 400)]
     if "Model access is denied" in response.body and
@@ -507,6 +515,10 @@ proc decide*(
 ): Decision =
   ## One decision for one seat. Never raises: any failure falls back to
   ## the scripted baseline so the game always advances.
+  let capture = getEnv(CogameSaveTrajectoryUriEnv).len > 0
+  if capture:
+    client.nativeAttempts.setLen(0)
+    client.nativeFallback = true
   if scripted or client.disabled:
     return client.scriptedAction(sim, seat)
   let system = systemPrompt(sim, seat, selection)
@@ -516,13 +528,23 @@ proc decide*(
       user.add("\nYour previous reply was invalid. Respond with ONLY the " &
         "requested JSON object and one option copied from the legal list.")
     try:
-      let payload = extractJsonObject(client.completeText(system, user, seat))
+      let payload = extractJsonObject(client.completeText(system, user, seat,
+        sim.config.players[seat].name, sim.ply, attempt))
       let decision = parseDecision(sim, seat, payload)
       ## Reject illegal picks here so the retry carries the hint.
       var probe = sim
       probe.applyMove(seat, decision.move)
+      if capture:
+        client.nativeAttempts[^1].parsedAction = decision.decisionJson()
+        client.nativeAttempts[^1].accepted = payload == decision.decisionJson()
+        if not client.nativeAttempts[^1].accepted:
+          client.nativeAttempts[^1].rejectionReason = some("native parser normalized action or speech")
+        client.nativeFallback = false
       return decision
     except CatchableError as error:
+      if capture and client.nativeAttempts.len > 0:
+        client.nativeAttempts[^1].accepted = false
+        client.nativeAttempts[^1].rejectionReason = some(error.msg)
       echo "focus llm: seat ", seat, " attempt ", attempt, " failed: ",
         error.msg
       if client.disabled:
